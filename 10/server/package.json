@@ -1,0 +1,17 @@
+{
+  "name": "chat-server-blackbox",
+  "version": "1.0.0",
+  "description": "Black Box Echo Server per il corso RTK Middleware",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}

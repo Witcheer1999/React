@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Socket.IO Test Client</title>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+</head>
+<body>
+    <h1>Test Client. Apri la console (F12).</h1>
+
+    <script>
+        console.log('Avvio del client di test...');
+
+        // 2. Connessione al nostro server Docker
+        // Specifichiamo i trasporti per coerenza con il server
+        const socket = io('http://localhost:8080', {
+            transports: ['polling', 'websocket']
+        });
+
+        // 3. Listener per la connessione
+        socket.on('connect', () => {
+            console.log('✅ CONNESSO! ID Socket:', socket.id);
+
+            // 4. Appena connessi, inviamo un messaggio di test
+            const testMessage = { user: "TestClientHTML", text: "Questo è un test puro." };
+            console.log('🚀 INVIO MESSAGGIO:', testMessage);
+            socket.emit('sendMessage', testMessage); // 'sendMessage' è l'evento che il server ascolta
+        });
+
+        // 5. Listener per i messaggi RICEVUTI DAL SERVER
+        // 'receiveMessage' è l'evento che il server emette
+        socket.on('receiveMessage', (message) => {
+            console.log('📬 MESSAGGIO RICEVUTO (Eco):', message);
+        });
+
+        // 6. Gestione errori
+        socket.on('connect_error', (err) => {
+            console.error('❌ ERRORE CONNESSIONE:', err.message);
+        });
+    </script>
+</body>
+</html>

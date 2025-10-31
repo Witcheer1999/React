@@ -1,0 +1,31 @@
+
+
+services:
+  # --- Modulo 1: Il Backend "Black Box" ---
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: chat-server
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./server:/usr/src/app
+      - /usr/src/app/node_modules
+    command: npm run dev
+    environment:
+      - NODE_ENV=development
+
+  # --- Modulo 2: Il Frontend Client ---
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+      # target: Rimosso! <-- USA LO STAGE FINALE ('prod')
+    container_name: chat-client-prod
+    ports:
+      - "80:80" # <-- Mappa la porta 80 di Nginx
+    # volumes: Rimossi! (non servono in prod)
+    # command: Rimossi! (usa il CMD del Dockerfile: "nginx -g ...")
+    environment:
+      - NODE_ENV=production

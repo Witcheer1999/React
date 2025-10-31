@@ -1,0 +1,11 @@
+# Ignora la cartella dei moduli di Node locali
+node_modules
+
+# Ignora la cartella di output della build (se presente localmente)
+dist
+
+# Altri file comuni da ignorare
+.git
+.gitignore
+npm-debug.log
+README.md
