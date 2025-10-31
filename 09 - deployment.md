@@ -1882,3 +1882,790 @@ Vercel rileverà questo file e applicherà le regole al prossimo deploy. Ora, se
 
 
 
+-----
+
+## Routes Protette
+
+Creare un "cancello" che controlli se un utente è autenticato prima di consentirgli di renderizzare una rotta specifica.
+
+### Il Contesto: `useAuth` e Tipi
+
+Per prima cosa, in un'app TypeScript, il nostro `AuthContext` esporrà un hook (`useAuth`) con un tipo ben definito.
+
+```typescript
+// contexts/AuthContext.tsx
+// (Definizione semplificata)
+import React, { createContext, useContext } from 'react';
+
+interface AuthContextType {
+  isAuthenticated: boolean;
+  // ... altri dati: user, login(), logout(), ecc.
+}
+
+const AuthContext = createContext<AuthContextType | null>(null);
+
+// L'Hook che useremo
+export const useAuth = (): AuthContextType => {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error('useAuth deve essere usato dentro un AuthProvider');
+  }
+  return context;
+};
+
+// ... resto del Provider
+```
+
+### Il "Cancello": `ProtectedRoute.tsx`
+
+Ora creiamo il nostro componente-cancello in TypeScript. Invece di accettare `children` (come si faceva in v5), il pattern moderno di v6 prevede che questo componente agisca come un "layout" che renderizza `<Outlet />` (se autorizzato) o `<Navigate />` (se non autorizzato).
+
+```typescript
+// components/ProtectedRoute.tsx
+import React from 'react';
+import { Navigate, Outlet, useLocation } from 'react-router-dom';
+import { useAuth } from '../hooks/useAuth';
+
+/**
+ * Questo componente agisce come "cancello" per le rotte figlie.
+ * Se l'utente è autenticato, renderizza l'<Outlet />, permettendo
+ * a React Router di proseguire con il rendering della rotta figlia richiesta.
+ * Altrimenti, reindirizza l'utente alla pagina di login.
+ */
+const ProtectedRoute: React.FC = () => {
+  const { isAuthenticated } = useAuth();
+  const location = useLocation();
+
+  if (!isAuthenticated) {
+    // Reindirizziamo l'utente alla pagina di login.
+    // 'replace' sostituisce la voce corrente nella cronologia
+    // (es. /dashboard) con /login, impedendo all'utente
+    // di "tornare indietro" alla pagina protetta.
+    // 'state' passa la posizione originale, così che la
+    // pagina di login possa reindirizzare l'utente
+    // indietro dopo un login riuscito.
+    return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+
+  // L'utente è autenticato: renderizza la rotta richiesta.
+  // <Outlet /> è il segnaposto dove React Router
+  // inietterà la rotta figlia (es. <DashboardPage />).
+  return <Outlet />;
+};
+
+export default ProtectedRoute;
+```
+
+### Integrazione nel Router JSX
+
+Ora utilizziamo questo componente all'interno della nostra definizione delle rotte (tipicamente in `App.tsx` o `Router.tsx`). Qui vedrai in azione `React.lazy`, `<Suspense>`, `<Routes>` e `<Route>`.
+
+```typescript
+// App.tsx
+import React, { Suspense } from 'react';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+
+// Layout e Fallback
+import RootLayout from './layouts/RootLayout';
+import PageLoader from './components/PageLoader';
+import ProtectedRoute from './components/ProtectedRoute'; // <-- Il nostro cancello
+
+// --- Pagine Lazy-Loaded ---
+const HomePage = React.lazy(() => import('./pages/HomePage'));
+const LoginPage = React.lazy(() => import('./pages/LoginPage'));
+const DashboardPage = React.lazy(() => import('./pages/DashboardPage'));
+const AdminPanel = React.lazy(() => import('./pages/AdminPanel'));
+const SettingsPage = React.lazy(() => import('./pages/SettingsPage'));
+const NotFoundPage = React.lazy(() => import('./pages/NotFoundPage'));
+
+const App: React.FC = () => {
+  return (
+    <BrowserRouter>
+      {/* Suspense gestisce il fallback per il lazy-loading.
+        Dovrebbe avvolgere l'intero blocco <Routes />
+        o essere posizionato strategicamente all'interno.
+        Metterlo qui, dentro il layout, è una scelta comune.
+      */}
+      <Suspense fallback={<PageLoader />}>
+        <Routes>
+          {/* Il RootLayout (con navbar/footer) avvolge tutte le pagine.
+            Tutte le rotte sottostanti verranno renderizzate nel suo <Outlet />
+          */}
+          <Route path="/" element={<RootLayout />}>
+            
+            {/* --- Rotte Pubbliche --- */}
+            <Route index element={<HomePage />} />
+            <Route path="login" element={<LoginPage />} />
+
+            {/* --- Gruppo di Rotte Protette --- */}
+            {/* Questa è la magia:
+              Creiamo una <Route> genitore che usa <ProtectedRoute /> 
+              come suo 'element'.
+              Tutte le rotte figlie nidificate qui dentro verranno
+              renderizzate *solo se* <ProtectedRoute /> renderizza
+              l'<Outlet /> (cioè, se l'utente è autenticato).
+            */}
+            <Route element={<ProtectedRoute />}>
+              <Route path="dashboard" element={<DashboardPage />} />
+              <Route path="settings" element={<SettingsPage />} />
+              <Route path="admin" element={<AdminPanel />} />
+            </Route>
+
+            {/* Rotta Catch-All per 404 */}
+            <Route path="*" element={<NotFoundPage />} />
+
+          </Route>
+        </Routes>
+      </Suspense>
+    </BrowserRouter>
+  );
+};
+
+export default App;
+```
+
+### Cosa Accade a Livello Profondo (Flusso JSX)
+
+Seguiamo un utente **non autenticato** che naviga verso `/dashboard`:
+
+1.  **Matching:** React Router cerca una corrispondenza nell'albero `<Routes>`.
+2.  Trova la corrispondenza: la rotta genitore `/` (`<RootLayout>`) e la rotta nidificata `dashboard`.
+3.  **Rendering Genitori:** Inizia a renderizzare i componenti `element` dall'alto verso il basso.
+      * Renderizza `<RootLayout />`.
+4.  **Matching Protetto:** Scende al livello successivo. Vede che `dashboard` è figlio di `<Route element={<ProtectedRoute />}>`.
+5.  **Rendering del Cancello:** React Router renderizza l'elemento del genitore: `<ProtectedRoute />`.
+6.  **Logica del Cancello:** Il codice di `ProtectedRoute` viene eseguito.
+      * `useAuth()` restituisce `{ isAuthenticated: false }`.
+      * La condizione `if (!isAuthenticated)` è `true`.
+7.  **Redirect:** Il componente restituisce `<Navigate to="/login" replace state={{...}} />`.
+8.  **Interruzione e Nuova Navigazione:** React Router rileva il `<Navigate />`. Abbandona *immediatamente* il tentativo di renderizzare il ramo corrente (la rotta `dashboard` non viene mai raggiunta, `<DashboardPage />` non viene mai importato/renderizzato).
+9.  React Router cambia l'URL in `/login` e ricomincia il processo di matching dal punto 1.
+10. **Rendering Finale:** Trova la rotta `login` (pubblica), renderizza `<RootLayout />` e al suo interno `<LoginPage />`.
+
+Abbiamo ottenuto lo stesso identico risultato professionale (protezione e redirect) usando la sintassi JSX e la sicurezza dei tipi di TypeScript.
+
+-----
+
+Ora, il problema successivo è evidente: in questo esempio, se un utente è loggato, può vedere `/dashboard`, `/settings` E `/admin`. Cosa succede se vogliamo che solo gli utenti con ruolo "admin" possano accedere a `/admin`?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-----
+
+## Autorizzazione Basata sui Ruoli (RBAC)
+
+Un utente `user` e un utente `admin` sono entrambi *autenticati*, ma non devono avere accesso alle stesse risorse. Il pattern più comune ed efficace per gestire questo è il **Role-Based Access Control (RBAC)**.
+
+L'obiettivo è evolvere il nostro `<ProtectedRoute>` affinché non si limiti a controllare *se* l'utente è loggato, ma controlli anche *quale ruolo* ha.
+
+### 1\. Aggiornare il Contesto e i Tipi
+
+Per prima cosa, il nostro `AuthContext` deve fornirci più di un semplice booleano. Deve esporre l'oggetto utente, che conterrà il suo ruolo.
+
+Definiamo i nostri tipi:
+
+```typescript
+// types/auth.ts
+export type Role = 'admin' | 'user' | 'guest'; // Definiamo i ruoli possibili
+
+export interface User {
+  id: string;
+  username: string;
+  role: Role;
+}
+
+export interface AuthContextType {
+  user: User | null;
+  isAuthenticated: boolean;
+  // ... login(), logout(), ecc.
+}
+```
+
+Il nostro hook `useAuth` (che proviene da `AuthContext`) ora ci darà accesso all'utente completo:
+
+```typescript
+// hooks/useAuth.ts (simulazione)
+import { User, AuthContextType } from '../types/auth';
+
+export const useAuth = (): AuthContextType => {
+  // Nella realtà, questo stato proverrebbe da un React.Context
+  const user: User | null = JSON.parse(localStorage.getItem('user') || 'null');
+  
+  return {
+    user,
+    isAuthenticated: !!user, // L'autenticazione è derivata dall'esistenza dell'utente
+  };
+};
+```
+
+### 2\. Evolvere il "Cancello": `<ProtectedRoute>` con Ruoli
+
+Il nostro componente-cancello deve ora accettare un nuovo prop: un array di ruoli a cui è permesso accedere alla rotta.
+
+```typescript
+// components/ProtectedRoute.tsx
+import React from 'react';
+import { Navigate, Outlet, useLocation } from 'react-router-dom';
+import { useAuth } from '../hooks/useAuth';
+import { Role } from '../types/auth'; // Importiamo il nostro tipo Role
+
+interface ProtectedRouteProps {
+  /** I ruoli autorizzati ad accedere a questa rotta */
+  allowedRoles: Role[];
+}
+
+const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ allowedRoles }) => {
+  const { isAuthenticated, user } = useAuth();
+  const location = useLocation();
+
+  // --- Caso 1: Non Autenticato ---
+  // L'utente non è affatto loggato.
+  // Rimandalo alla pagina di login.
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+
+  // --- Caso 2: Autenticato ma Non Autorizzato (Forbidden) ---
+  // L'utente è loggato (es. 'user'), ma sta cercando di accedere
+  // a una risorsa per cui non ha il ruolo (es. 'admin').
+  // NON dobbiamo rimandarlo al login. Dobbiamo rimandarlo
+  // a una pagina "Non autorizzato" (Errore 403 Forbidden).
+  if (!allowedRoles.includes(user!.role)) {
+    // user! (non-null assertion) è sicuro qui perché 
+    // se isAuthenticated è true, user non può essere null.
+    return <Navigate to="/unauthorized" replace />;
+  }
+
+  // --- Caso 3: Autenticato e Autorizzato ---
+  // L'utente è loggato E il suo ruolo è nella lista.
+  // Procedi e renderizza la rotta richiesta.
+  return <Outlet />;
+};
+
+export default ProtectedRoute;
+```
+
+### 3\. Integrazione nel Router JSX
+
+Con il nostro `<ProtectedRoute>` potenziato, la definizione delle rotte diventa incredibilmente dichiarativa e facile da leggere.
+
+Creeremo una nuova pagina `/unauthorized` (che puoi implementare come un semplice componente lazy).
+
+```typescript
+// App.tsx
+import React, { Suspense } from 'react';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+
+// ... (import di Layout, Loader, e Pagine Lazy)
+import ProtectedRoute from './components/ProtectedRoute'; // <-- Il nostro cancello aggiornato
+
+const HomePage = React.lazy(() => import('./pages/HomePage'));
+const LoginPage = React.lazy(() => import('./pages/LoginPage'));
+const DashboardPage = React.lazy(() => import('./pages/DashboardPage'));
+const AdminPanel = React.lazy(() => import('./pages/AdminPanel'));
+const SettingsPage = React.lazy(() => import('./pages/SettingsPage'));
+const UnauthorizedPage = React.lazy(() => import('./pages/UnauthorizedPage')); // <-- Nuova
+const NotFoundPage = React.lazy(() => import('./pages/NotFoundPage'));
+
+const App: React.FC = () => {
+  return (
+    <BrowserRouter>
+      <Suspense fallback={<PageLoader />}>
+        <Routes>
+          <Route path="/" element={<RootLayout />}>
+            
+            {/* --- Rotte Pubbliche --- */}
+            <Route index element={<HomePage />} />
+            <Route path="login" element={<LoginPage />} />
+            <Route path="unauthorized" element={<UnauthorizedPage />} />
+
+            {/* --- Rotte per Utenti Autenticati (Ruolo 'user' o 'admin') --- */}
+            <Route element={<ProtectedRoute allowedRoles={['user', 'admin']} />}>
+              <Route path="dashboard" element={<DashboardPage />} />
+              <Route path="settings" element={<SettingsPage />} />
+              {/* Nota: AdminPanel NON è qui */}
+            </Route>
+
+            {/* --- Rotte Solo per Amministratori (Ruolo 'admin') --- */}
+            <Route element={<ProtectedRoute allowedRoles={['admin']} />}>
+              <Route path="admin" element={<AdminPanel />} />
+              {/* potremmo avere anche /admin/users, /admin/reports, ecc. */}
+            </Route>
+
+            {/* --- Catch-All --- */}
+            <Route path="*" element={<NotFoundPage />} />
+
+          </Route>
+        </Routes>
+      </Suspense>
+    </BrowserRouter>
+  );
+};
+
+export default App;
+```
+
+### Cosa Accade a Livello Profondo (Il Flusso "Forbidden")
+
+Analizziamo lo scenario più interessante: un utente con ruolo `user` prova a visitare `/admin`.
+
+1.  **Matching:** React Router abbina la rotta `/admin`.
+2.  **Rendering Genitori:** Renderizza `<RootLayout />`.
+3.  **Matching Autorizzazione:** Vede che `/admin` è figlio di `<Route element={<ProtectedRoute allowedRoles={['admin']} />}>`.
+4.  **Rendering del Cancello:** Renderizza `<ProtectedRoute allowedRoles={['admin']} />`.
+5.  **Logica del Cancello:** Il codice del componente viene eseguito:
+      * `useAuth()` restituisce `{ isAuthenticated: true, user: { role: 'user' } }`.
+      * `allowedRoles` (passato via prop) è `['admin']`.
+6.  **Controllo 1 (Autenticazione):** `if (!isAuthenticated)` -\> `false`. Il controllo passa.
+7.  **Controllo 2 (Autorizzazione):** `if (!['admin'].includes('user'))` -\> `true`. Il controllo fallisce.
+8.  **Redirect 403:** Il componente restituisce `<Navigate to="/unauthorized" replace />`.
+9.  **Interruzione e Nuova Navigazione:** React Router interrompe il rendering di `/admin`, cambia l'URL in `/unauthorized` e ricomincia il matching.
+10. **Rendering Finale:** L'utente vede la pagina `<UnauthorizedPage />`.
+
+Abbiamo separato con successo la logica di autenticazione (sei loggato?) da quella di autorizzazione (puoi essere qui?), gestendo i due casi di fallimento con due redirect diversi (`/login` e `/unauthorized`), che è fondamentale per una buona User Experience.
+
+-----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-----
+
+## Gestione della Sessione al Caricamento con RTK Query
+
+### Il Problema: Lo "Sfarfallio" al Refresh
+
+Immagina un utente autenticato (es. `admin`) sulla pagina `miosito.com/admin`. Preme F5 per ricaricare la pagina.
+
+1.  L'app React si avvia.
+2.  Lo store Redux si inizializza con il suo stato di default (es. `user: null`).
+3.  React Router abbina `/admin` e tenta di renderizzare il nostro `<ProtectedRoute>`.
+4.  Il `<ProtectedRoute>` legge lo store, vede `user: null` (non autenticato) e...
+5.  **REDIRECT:** Reindirizza l'utente a `/login`. Per un istante, l'utente vede la pagina di login.
+6.  *Nel frattempo*, un codice (che dovremmo ancora scrivere) controlla il token, contatta il backend, riceve la conferma e *poi* aggiorna lo store.
+7.  L'app ri-renderizza, vede l'utente, e lo reindirizza *indietro* a `/admin`.
+
+Questo "sfarfallio" (`/admin` -\> `/login` -\> `/admin`) è un'esperienza utente pessima e la risolveremo gestendo l'autenticazione come un'operazione di *query* dichiarativa.
+
+-----
+
+### 1\. Definire l'API Slice (`authApi.ts`)
+
+Per prima cosa, definiamo un "API slice" con RTK Query. Questo file descrive *come* interagire con gli endpoint di autenticazione del nostro backend.
+
+```typescript
+// store/api/authApi.ts
+import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
+import { User } from '../../types/auth'; // I nostri tipi (User, Role)
+
+// Definiamo il nostro "API slice"
+export const authApi = createApi({
+  reducerPath: 'authApi',
+  baseQuery: fetchBaseQuery({ baseUrl: '/api' }), // Adatta al tuo base URL
+  
+  // 'tagTypes' è cruciale per la gestione della cache.
+  // Una chiamata 'Auth' fornisce dati che possono essere
+  // invalidati da un'altra (es. il logout).
+  tagTypes: ['Auth'],
+
+  endpoints: (builder) => ({
+    /**
+     * Questo endpoint è il cuore della nostra soluzione.
+     * È una "query" (lettura dati) che colpisce l'endpoint
+     * del backend (es. /api/auth/me) che valida il token
+     * (spesso da un cookie httpOnly) e restituisce i dati utente.
+     */
+    checkAuthStatus: builder.query<User, void>({
+      query: () => '/auth/me', // L'endpoint che restituisce l'utente
+      
+      // Questa query "fornisce" un tag 'Auth'.
+      // Se un'altra operazione (es. logout) "invalida" 'Auth',
+      // RTK Query rieseguirà questa query automaticamente.
+      providesTags: ['Auth'],
+    }),
+
+    // Potremmo aggiungere anche login/logout qui come 'mutations'
+    // logout: builder.mutation<void, void>({
+    //   query: () => ({ url: '/auth/logout', method: 'POST' }),
+    //   invalidatesTags: ['Auth'], // Il logout INVALIDA la sessione
+    // }),
+  }),
+});
+
+// RTK Query genera automaticamente hook React per ogni endpoint.
+// Questo hook è la chiave della nostra architettura.
+export const { 
+  useCheckAuthStatusQuery,
+  // useLogoutMutation 
+} = authApi;
+```
+
+-----
+
+### 2\. Definire lo Slice di Stato (`authSlice.ts`)
+
+L'API slice *ottiene* i dati. Lo slice di stato *conserva* i dati. Separare queste responsabilità è una buona pratica. L'unica responsabilità di `authSlice` è tenere traccia dell'utente attualmente loggato.
+
+```typescript
+// store/authSlice.ts
+import { createSlice, PayloadAction } from '@reduxjs/toolkit';
+import { User } from '../types/auth';
+import { authApi } from './api/authApi'; // Importiamo l'API
+
+interface AuthState {
+  user: User | null;
+}
+
+const initialState: AuthState = {
+  user: null,
+};
+
+const authSlice = createSlice({
+  name: 'auth',
+  initialState,
+  reducers: {
+    // Un reducer per il logout manuale (es. token scaduto)
+    logout: (state) => {
+      state.user = null;
+    },
+  },
+  
+  // Qui avviene la magia:
+  // "ascoltiamo" le azioni dispatchate da RTK Query.
+  extraReducers: (builder) => {
+    builder
+      // Caso 1: La query checkAuthStatus ha SUCCESSO
+      .addMatcher(
+        authApi.endpoints.checkAuthStatus.matchFulfilled,
+        (state, action: PayloadAction<User>) => {
+          // Salviamo i dati utente nel nostro stato
+          state.user = action.payload;
+        }
+      )
+      // Caso 2: La query checkAuthStatus FALLISCE
+      .addMatcher(
+        authApi.endpoints.checkAuthStatus.matchRejected,
+        (state) => {
+          // Assicuriamo che l'utente sia null
+          state.user = null;
+        }
+      );
+  },
+});
+
+export const { logout } = authSlice.actions;
+export default authSlice.reducer;
+```
+
+-----
+
+### 3\. Configurare lo Store (`store.ts`)
+
+Ora colleghiamo entrambi gli slice e il middleware di RTK Query al nostro store Redux.
+
+```typescript
+// store/store.ts
+import { configureStore } from '@reduxjs/toolkit';
+import authReducer from './authSlice';
+import { authApi } from './api/authApi';
+
+export const store = configureStore({
+  reducer: {
+    auth: authReducer,
+    // Aggiungiamo il reducer generato dall'API
+    [authApi.reducerPath]: authApi.reducer,
+  },
+  
+  // Aggiungere il middleware dell'API è OBBLIGATORIO.
+  // Gestisce il ciclo di vita delle richieste, la cache, ecc.
+  middleware: (getDefaultMiddleware) =>
+    getDefaultMiddleware().concat(authApi.middleware),
+});
+
+// Esportiamo tipi per l'uso nell'app
+export type RootState = ReturnType<typeof store.getState>;
+export type AppDispatch = typeof store.dispatch;
+```
+
+-----
+
+### 4\. Creare il "Cancello di Caricamento" (`AuthInitializer.tsx`)
+
+Questo è un nuovo componente "layout" che ha un solo scopo: **bloccare il rendering dell'app** finché la query `checkAuthStatus` non è stata risolta (completata o fallita).
+
+```typescript
+// components/AuthInitializer.tsx
+import React from 'react';
+import { Outlet } from 'react-router-dom';
+// Importiamo l'hook auto-generato
+import { useCheckAuthStatusQuery } from '../store/api/authApi';
+import FullPageLoader from './FullPageLoader'; // Un componente spinner
+
+const AuthInitializer: React.FC = () => {
+  /**
+   * Appena questo componente si monta, chiama l'hook.
+   * RTK Query avvia la richiesta (se non è già in cache)
+   * e ci tiene aggiornati sul suo stato.
+   */
+  const { isLoading, isUninitialized } = useCheckAuthStatusQuery();
+
+  // 'isUninitialized' = la query non è ancora stata fatta
+  // 'isLoading' = la query è in corso per la prima volta
+  const isAuthLoading = isLoading || isUninitialized;
+
+  if (isAuthLoading) {
+    // MENTRE la query è in volo, mostriamo uno spinner
+    return <FullPageLoader />;
+  }
+
+  // Quando isLoading/isUninitialized sono 'false', la query
+  // è stata risolta. Il nostro 'authSlice' è stato aggiornato.
+  // Ora possiamo procedere a renderizzare il resto dell'app.
+  return <Outlet />;
+};
+
+export default AuthInitializer;
+```
+
+-----
+
+### 5\. `ProtectedRoute.tsx` (Lettore dello Stato)
+
+Il nostro `ProtectedRoute` (scritto nel capitolo 3) non ha bisogno di cambiare. Il suo compito è solo **leggere** lo stato finale da `authSlice`, non gli interessa *come* ci è arrivato.
+
+```typescript
+// components/ProtectedRoute.tsx
+import React from 'react';
+import { Navigate, Outlet, useLocation } from 'react-router-dom';
+import { useSelector } from 'react-redux';
+import { RootState } from '../store/store';
+import { Role } from '../types/auth';
+
+interface ProtectedRouteProps {
+  allowedRoles: Role[];
+}
+
+const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ allowedRoles }) => {
+  // Legge la "single source of truth" dal nostro authSlice
+  const user = useSelector((state: RootState) => state.auth.user);
+  const isAuthenticated = !!user;
+  const location = useLocation();
+
+  // Caso 1: Non Autenticato (user è null)
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+
+  // Caso 2: Non Autorizzato (Forbidden)
+  if (!allowedRoles.includes(user.role)) {
+    return <Navigate to="/unauthorized" replace />;
+  }
+  
+  // Caso 3: Autorizzato
+  return <Outlet />;
+};
+
+export default ProtectedRoute;
+```
+
+-----
+
+### 6\. Assemblare il Router (`App.tsx` e `index.tsx`)
+
+Infine, mettiamo tutto insieme.
+
+**`index.tsx` (o `main.tsx`)**:
+Avvolgiamo l'intera app nel `<Provider>` di Redux.
+
+```typescript
+// index.tsx
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { Provider } from 'react-redux';
+import { store } from './store/store';
+import App from './App'; // Il nostro componente App che contiene il Router
+
+const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
+root.render(
+  <React.StrictMode>
+    <Provider store={store}>
+      <App />
+    </Provider>
+  </React.StrictMode>
+);
+```
+
+**`App.tsx` (Il Router)**:
+Questa è la parte critica. Il `<AuthInitializer>` deve essere il "genitore" di tutte le altre rotte.
+
+```typescript
+// App.tsx
+import React, { Suspense } from 'react';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+
+// Layout e Loader
+import RootLayout from './layouts/RootLayout';
+import PageLoader from './components/PageLoader';
+
+// Componenti "Cancello"
+import AuthInitializer from './components/AuthInitializer'; // <-- Il nostro cancello
+import ProtectedRoute from './components/ProtectedRoute';
+
+// Pagine (Lazy-loaded)
+const HomePage = React.lazy(() => import('./pages/HomePage'));
+const LoginPage = React.lazy(() => import('./pages/LoginPage'));
+const DashboardPage = React.lazy(() => import('./pages/DashboardPage'));
+const AdminPanel = React.lazy(() => import('./pages/AdminPanel'));
+const UnauthorizedPage = React.lazy(() => import('./pages/UnauthorizedPage'));
+// ... altre pagine ...
+
+const App: React.FC = () => {
+  return (
+    <BrowserRouter>
+      <Suspense fallback={<PageLoader />}>
+        <Routes>
+          {/* Questa è la rotta più esterna. Renderizza <AuthInitializer />.
+            Nient'altro (l'<Outlet />) verrà renderizzato
+            finché la query di auth non sarà risolta.
+          */}
+          <Route element={<AuthInitializer />}>
+          
+            {/* Il resto della nostra app, renderizzato SOLO DOPO l'auth */}
+            <Route path="/" element={<RootLayout />}>
+              
+              {/* --- Rotte Pubbliche --- */}
+              <Route index element={<HomePage />} />
+              <Route path="login" element={<LoginPage />} />
+              <Route path="unauthorized" element={<UnauthorizedPage />} />
+
+              {/* --- Rotte per Utenti Base ('user' o 'admin') --- */}
+              <Route element={<ProtectedRoute allowedRoles={['user', 'admin']} />}>
+                <Route path="dashboard" element={<DashboardPage />} />
+              </Route>
+
+              {/* --- Rotte Solo per Amministratori --- */}
+              <Route element={<ProtectedRoute allowedRoles={['admin']} />}>
+                <Route path="admin" element={<AdminPanel />} />
+              </Route>
+              
+              {/* ... altre rotte e 404 ... */}
+
+            </Route>
+          </Route>
+        </Routes>
+      </Suspense>
+    </BrowserRouter>
+  );
+};
+
+export default App;
+```
+
+### Flusso di Esecuzione (Senza Sfarfallio)
+
+Ora, l'utente `admin` ricarica `/admin`:
+
+1.  L'app si avvia, lo store Redux è vuoto (`user: null`).
+2.  React Router abbina la rotta e renderizza `<AuthInitializer />`.
+3.  `AuthInitializer` chiama `useCheckAuthStatusQuery()`. L'hook restituisce `isLoading: true`.
+4.  Il componente restituisce `<FullPageLoader />`. **L'utente vede uno spinner.**
+5.  RTK Query esegue la richiesta a `/api/auth/me`.
+6.  L'API ha successo e restituisce `{ id: '123', ..., role: 'admin' }`.
+7.  Il *matcher* in `authSlice` intercetta l'azione `matchFulfilled` e aggiorna lo store: `auth: { user: { role: 'admin' } }`.
+8.  `AuthInitializer` si ri-renderizza. `isLoading` è ora `false`.
+9.  Il componente restituisce `<Outlet />`.
+10. React Router *prosegue* e renderizza `<RootLayout />`, poi `<ProtectedRoute allowedRoles={['admin']} />`.
+11. `ProtectedRoute` legge da `state.auth.user` e trova l'utente `admin`. I controlli passano.
+12. Restituisce `<Outlet />`, e `<AdminPanel />` viene caricato e mostrato.
+
+**Risultato:** L'utente ha visto solo `Spinner -> Pagina Admin`. Il problema è risolto in modo pulito e dichiarativo.
+
+-----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
